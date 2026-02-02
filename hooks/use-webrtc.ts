@@ -279,7 +279,7 @@ export function useWebRTC() {
             return;
         }
 
-        const sanitizedId = peerId.trim().replace(/[-\s]/g, '');
+        const sanitizedId = peerId.trim().replace(/\s/g, '');
         lastAttemptedPeerId.current = sanitizedId;
 
         // Reset retry count if it's a new peer
