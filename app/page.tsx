@@ -9,7 +9,6 @@ import { useWebRTC } from "@/hooks/use-webrtc"
 import { useStore } from "@/lib/store"
 import Image from 'next/image'
 import { Moon, Sun, Shield } from "lucide-react"
-import { SyncersLogo } from "@/components/SyncersLogo"
 import { Button } from "@/components/ui/button"
 
 function SyncersApp({ roomId: pathRoomId }: { roomId?: string }) {
