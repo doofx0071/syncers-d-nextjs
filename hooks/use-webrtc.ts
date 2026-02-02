@@ -415,16 +415,8 @@ export function useWebRTC() {
         }
     }, []);
 
-    // We can't use recursion with const lambda comfortably. 
-    // Let's use a useRef to hold the processor function so we can call it from inside.
-    const processRef = useRef<() => Promise<void>>(async () => { });
-
-    processRef.current = async () => {
-        if (isTransferring || transferQueue.length === 0) return;
-
-        isTransferring = true;
-        const { file, id: fileId } = transferQueue[0];
-
+    // Transfer logic - Independent streams per peer
+    const transferFileToPeer = useCallback(async (file: File, fileId: string, conn: DataConnection) => {
         try {
             const chunkSize = 64 * 1024;
             const bufferThreshold = 1024 * 1024;
@@ -432,25 +424,27 @@ export function useWebRTC() {
             let pos = 0;
             let lastUpdate = 0;
 
+            console.log(`Starting transfer of ${file.name} to ${conn.peer}`);
+
             while (offset < file.size) {
-                let backpressure = false;
-                for (const conn of globalConnections.values()) {
-                    if (conn.open && conn.dataChannel.bufferedAmount > bufferThreshold) {
-                        backpressure = true;
-                        await new Promise<void>(resolve => {
-                            const handler = () => {
-                                conn.dataChannel.onbufferedamountlow = null;
-                                resolve();
-                            };
-                            conn.dataChannel.onbufferedamountlow = handler;
-                            setTimeout(resolve, 500);
-                        });
-                        break;
-                    }
+                // Check if connection is still alive
+                if (!conn.open) {
+                    throw new Error(`Connection to ${conn.peer} closed mid-transfer`);
                 }
 
-                if (backpressure) continue;
+                // Backpressure check for THIS peer only
+                if (conn.dataChannel.bufferedAmount > bufferThreshold) {
+                    await new Promise<void>(resolve => {
+                        const handler = () => {
+                            conn.dataChannel.onbufferedamountlow = null;
+                            resolve();
+                        };
+                        conn.dataChannel.onbufferedamountlow = handler;
+                        setTimeout(resolve, 500); // 500ms Fail-safe
+                    });
+                }
 
+                // Prepare chunk
                 const slice = file.slice(offset, offset + chunkSize);
                 const buffer = await slice.arrayBuffer();
 
@@ -463,11 +457,13 @@ export function useWebRTC() {
                     total: file.size
                 };
 
-                globalConnections.forEach(c => c.open && c.send(msg));
+                conn.send(msg);
 
+                // Update state
                 offset += slice.size;
                 pos++;
 
+                // Update Global Progress (Race)
                 const now = Date.now();
                 if (now - lastUpdate > 200 || offset >= file.size) {
                     const progress = Math.min(100, Math.round((offset / file.size) * 100));
@@ -475,17 +471,41 @@ export function useWebRTC() {
                     lastUpdate = now;
                 }
             }
+            console.log(`Finished transfer of ${file.name} to ${conn.peer}`);
         } catch (err) {
-            console.error('Transfer error:', err);
-            useStore.getState().setError('Transfer failed: ' + (err instanceof Error ? err.message : String(err)));
-        } finally {
+            console.error(`Transfer to ${conn.peer} failed:`, err);
+        }
+    }, []);
+
+    // Queue processor - Spawns independent workers
+    const processQueue = useCallback(async () => {
+        if (isTransferring || transferQueue.length === 0) return;
+
+        isTransferring = true;
+        const { file, id: fileId } = transferQueue[0];
+
+        // Snapshot connected peers
+        const activeConnections = Array.from(globalConnections.values()).filter(c => c.open);
+
+        if (activeConnections.length === 0) {
+            console.warn('No active connections to send file to');
+            useStore.getState().setError('No peers connected');
             transferQueue.shift();
             isTransferring = false;
-            setTimeout(() => {
-                processRef.current(); // Recursive call via ref
-            }, 50);
+            return;
         }
-    };
+
+        // Spawn parallel transfers
+        await Promise.all(activeConnections.map(conn => transferFileToPeer(file, fileId, conn)));
+
+        // Cleanup
+        transferQueue.shift();
+        isTransferring = false;
+
+        // Loop
+        setTimeout(processQueue, 50);
+    }, [transferFileToPeer]);
+
 
     // Send file
     const sendFile = useCallback((file: File) => {
@@ -514,9 +534,9 @@ export function useWebRTC() {
         globalConnections.forEach(c => c.open && c.send(addMsg));
 
         transferQueue.push({ file, id: fileId });
-        processRef.current(); // Trigge processing
+        processQueue(); // Trigger processing
 
-    }, [addFile, setError]);
+    }, [addFile, setError, processQueue]);
 
     return { connectToPeer, sendFile, broadcastNameChange };
 }
