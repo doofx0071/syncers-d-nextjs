@@ -231,12 +231,27 @@ export function useWebRTC() {
             // Handle specific error types
             if (err.type === 'unavailable-id') {
                 console.warn('ID taken, retrying with new ID...');
-                const newId = generateShortId();
-                // Note: Recursive recreation is tricky in useEffect. 
-                // For now, we accept fate or could reload.
-                // In a perfect world, we'd refactor initialization into a function.
+                // ... same as before
             } else if (err.type === 'peer-unavailable') {
-                setError(`Peer ${err.message.split(' ').pop()} not found. They may have disconnected.`);
+                // Check if this error relates to the peer we are trying to connect to
+                const targetId = lastAttemptedPeerId.current;
+                const failedId = err.message.split(' ').pop(); // Message: "Could not connect to peer X"
+
+                if (targetId && failedId && (targetId === failedId || failedId.includes(targetId) || targetId.includes(failedId))) {
+                    console.log(`Target peer ${targetId} unavailable. Retry attempt ${retryCount.current + 1}/5`);
+
+                    if (retryCount.current < 5) {
+                        retryCount.current++;
+                        setTimeout(() => {
+                            if (lastAttemptedPeerId.current === targetId) { // Ensure we haven't switched targets
+                                connectToPeer(targetId);
+                            }
+                        }, 2000 * retryCount.current); // Exponential backoff: 2s, 4s, 6s...
+                        return; // Handled
+                    }
+                }
+
+                setError(`Peer ${failedId || 'unknown'} not found. They may be offline.`);
             } else {
                 setError(err.message || 'Connection error');
                 setConnectionStatus('error');
@@ -255,17 +270,33 @@ export function useWebRTC() {
     }, [setProfile, setConnectionStatus, setError, setIsHost, setupConnection]);
 
     // Connect to peer
+    const retryCount = useRef(0);
+    const lastAttemptedPeerId = useRef<string | null>(null);
+
     const connectToPeer = useCallback((peerId: string, password?: string) => {
         if (!globalPeer || !globalPeer.open) {
             setError('Not connected to network');
             return;
         }
 
-        // Sanitize peerId: remove spaces and dashes to make it robust
         const sanitizedId = peerId.trim().replace(/[-\s]/g, '');
-        const conn = globalPeer.connect(sanitizedId);
+        lastAttemptedPeerId.current = sanitizedId;
+
+        // Reset retry count if it's a new peer
+        if (lastAttemptedPeerId.current !== sanitizedId) {
+            retryCount.current = 0;
+        }
+
+        console.log(`Attempting to connect to ${sanitizedId} (Attempt ${retryCount.current + 1})...`);
+
+        const conn = globalPeer.connect(sanitizedId, {
+            reliable: true,
+            serialization: 'json'
+        });
 
         conn.on('open', () => {
+            console.log(`Connected to host ${sanitizedId}`);
+            retryCount.current = 0; // Reset on success
             globalConnections.set(peerId, conn);
             globalIsHost = false;
             globalHostId = peerId;
@@ -278,10 +309,12 @@ export function useWebRTC() {
             setupConnection(conn);
         });
 
-        conn.on('error', (err) => {
-            console.error('Connection failed:', err);
-            setError('Failed to connect: ' + err.message);
+        conn.on('close', () => {
+            console.log('Connection closed');
+            // Optional: Auto-reconnect logic here?
         });
+
+        // Link this connection attempt to the global error handler via the ref
     }, [addPeer, setIsHost, setError, setupConnection]);
 
     // Broadcast name change
