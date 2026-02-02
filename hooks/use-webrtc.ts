@@ -198,6 +198,32 @@ export function useWebRTC() {
         initRef.current = true;
         globalInitialized = true;
 
+
+        // Wake Lock to prevent sleep on mobile
+        let wakeLock: WakeLockSentinel | null = null;
+        const requestWakeLock = async () => {
+            try {
+                if ('wakeLock' in navigator) {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                    console.log('Wake Lock active');
+                    wakeLock.addEventListener('release', () => {
+                        console.log('Wake Lock released');
+                    });
+                }
+            } catch (err) {
+                console.error('Wake Lock rejected:', err);
+            }
+        };
+        requestWakeLock();
+
+        // Re-request wake lock on visibility change (tabs)
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'visible') {
+                requestWakeLock();
+            }
+        };
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+
         setConnectionStatus('connecting');
 
         const myShortId = generateShortId();
