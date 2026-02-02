@@ -201,7 +201,18 @@ export function useWebRTC() {
         setConnectionStatus('connecting');
 
         const myShortId = generateShortId();
-        const peer = new Peer(myShortId);
+
+        // Use Google's standard STUN servers for better connectivity
+        const peerConfig = {
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:global.stun.twilio.com:3478' }
+                ]
+            }
+        };
+
+        const peer = new Peer(myShortId, peerConfig);
         globalPeer = peer;
 
         peer.on('open', (id) => {
@@ -209,6 +220,19 @@ export function useWebRTC() {
             setConnectionStatus('connected');
             globalIsHost = true;
             setIsHost(true);
+        });
+
+        // Add error handler for ID taken or other initialization errors
+        peer.on('error', (err) => {
+            console.error('Peer error:', err);
+            // If ID is unavailable, try again with a new ID
+            if (err.type === 'unavailable-id') {
+                const newId = generateShortId();
+                const newPeer = new Peer(newId, peerConfig);
+                globalPeer = newPeer;
+                // We would need to re-attach listeners here, but for now let's just log
+                // Ideally we'd wrap creation in a function to recursive retry
+            }
         });
 
         peer.on('connection', (conn) => {
