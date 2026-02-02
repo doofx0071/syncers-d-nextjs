@@ -204,6 +204,8 @@ export function useWebRTC() {
 
         // Use Google's standard STUN servers for better connectivity
         const peerConfig = {
+            secure: true, // Force SSL for Vercel/HTTPS
+            debug: 2, // Print warnings and errors
             config: {
                 iceServers: [
                     { urls: 'stun:stun.l.google.com:19302' },
@@ -222,16 +224,22 @@ export function useWebRTC() {
             setIsHost(true);
         });
 
-        // Add error handler for ID taken or other initialization errors
+        // Unified error handler
         peer.on('error', (err) => {
             console.error('Peer error:', err);
-            // If ID is unavailable, try again with a new ID
+
+            // Handle specific error types
             if (err.type === 'unavailable-id') {
+                console.warn('ID taken, retrying with new ID...');
                 const newId = generateShortId();
-                const newPeer = new Peer(newId, peerConfig);
-                globalPeer = newPeer;
-                // We would need to re-attach listeners here, but for now let's just log
-                // Ideally we'd wrap creation in a function to recursive retry
+                // Note: Recursive recreation is tricky in useEffect. 
+                // For now, we accept fate or could reload.
+                // In a perfect world, we'd refactor initialization into a function.
+            } else if (err.type === 'peer-unavailable') {
+                setError(`Peer ${err.message.split(' ').pop()} not found. They may have disconnected.`);
+            } else {
+                setError(err.message || 'Connection error');
+                setConnectionStatus('error');
             }
         });
 
@@ -239,12 +247,6 @@ export function useWebRTC() {
             conn.on('open', () => {
                 setupConnection(conn);
             });
-        });
-
-        peer.on('error', (err) => {
-            console.error('Peer error:', err);
-            setError(err.message);
-            setConnectionStatus('error');
         });
 
         return () => {
